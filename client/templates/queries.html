@@ -1,0 +1,27 @@
+<template name="queries">
+  <table>
+    <tr>
+      <td><b>Status</b></td>
+      <td><b>Schedule</b></td>
+      <td><b>Time spent</b></td>
+      <td><b>Table</b></td>
+      <td><b>URL</b></td>
+      <td></td>
+    </tr>
+    {{#each queries}}
+      {{> query}}
+    {{/each}}
+  </table>
+</template>
+
+
+<template name="query">
+  <tr>
+    <td>{{state}}</td>
+    <td>{{period}}</td>
+    <td>{{spent}}</td>
+    <td>{{table}}</td>
+    <td><span title="{{url}}"><i>URL (hover)</i></span></td>
+    <td><input type="button" class="remove-button" value="Remove"></td>
+  </tr>
+</template>

@@ -1,0 +1,11 @@
+html {
+  font-family: sans-serif;
+}
+
+table {
+  font-size: 0.85em;
+}
+
+tr:nth-child(even) {
+  background: #EEE;
+}
