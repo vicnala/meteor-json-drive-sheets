@@ -48,7 +48,8 @@ Meteor.startup(function(){
           });
 
           Queries.update({table: query.table}, {$set:{
-            sheetId: res.id
+            sheetId: res.id,
+            nextRun: SyncedCron.nextScheduledAtDate(query.table).toLocaleTimeString()
           }});
 
           Drive.update({table: query.table}, {$set:{
@@ -128,12 +129,15 @@ function addToCron(query) {
                 SyncedCron.remove(query.table);
               }
 
-              var end = new Date;
+              var end = new Date();
+              var next = SyncedCron.nextScheduledAtDate(query.table)
               //var diff = Math.floor((end - start) / 1000);
               var diff = (end - start) / 1000;
               Queries.update(query._id, {$set:{
                 state: 'idle',
-                spent: diff
+                spent: diff,
+                lastRun: end.toLocaleTimeString(),
+                nextRun: next.toLocaleTimeString()
               }});
             } else {
               //console.log('ERROR:JSON:PARSE:', e);
