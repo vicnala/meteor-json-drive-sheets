@@ -3,8 +3,21 @@ Meteor.startup(function () {
   //http://docs.meteor.com/#/full/observe
   Drive.find().observe({
     changed: function(table) {
+      var start = new Date()
+      var getTime = Queries.findOne({table: table.table}).getTime;
+
       console.log('Drive changed', table);
+      Queries.update({table: table.table}, {$set:{state: 'uploading ...'}});
+      // upload
       writeAll(table);
+
+      var end = new Date();
+      var diff = (end - start) / 1000;
+      Queries.update({table: table.table}, {$set:{
+        state: 'idle',
+        uploadTime: diff,
+        totalTime: (getTime + diff).toFixed(2)
+      }});
     },
     added: function (table) {
       // called every server start

@@ -135,7 +135,7 @@ function addToCron(query) {
               var diff = (end - start) / 1000;
               Queries.update(query._id, {$set:{
                 state: 'idle',
-                spent: diff,
+                getTime: diff,
                 lastRun: end.toLocaleTimeString(),
                 nextRun: next.toLocaleTimeString()
               }});
