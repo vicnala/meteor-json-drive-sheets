@@ -1,5 +1,4 @@
 Meteor.startup(function(){
-  var googleUser = Meteor.users.findOne();
   //console.log(googleUser.services.google.scope);
 
   // https://github.com/percolatestudio/meteor-google-api
@@ -18,6 +17,7 @@ Meteor.startup(function(){
     console.log(e);
   }*/
 
+
   Queries.update({}, {$set:{
     state: 'idle'
   }});
@@ -26,7 +26,13 @@ Meteor.startup(function(){
 
   Queries.find().observe({
     added: function (query) {
+      var googleUser = Meteor.users.findOne();
       // called every server start
+      // add to the collection with the sheet id
+      addToDriveCollection(query);
+      // add the schedule
+      addToCron(query);
+
       //console.log('Query added', query.table);
       if (!query.sheetId) {
         // add a sheet to google drive
@@ -36,7 +42,6 @@ Meteor.startup(function(){
           'parents': [{'id': Meteor.settings.DRIVE_FOLDER_ID}]
         };
         try {
-          console.log('post to google');
           var res = GoogleApi.post(drv, {
             user: googleUser,
             data: body,
@@ -45,16 +50,17 @@ Meteor.startup(function(){
           Queries.update({table: query.table}, {$set:{
             sheetId: res.id
           }});
+
+          Drive.update({table: query.table}, {$set:{
+            sheetId: res.id
+          }});
         } catch (e) {
           console.log(e);
         }
       }
-      // add to the collection with the sheet id
-      addToDriveCollection(query);
-      // add the schedule
-      addToCron(query);
     },
     removed: function (query) {
+      var googleUser = Meteor.users.findOne();
       //console.log('Query removed', query.table);
       // trash google sheet
       try {
@@ -71,12 +77,14 @@ Meteor.startup(function(){
 
 function addToDriveCollection(query) {
   var exists = Drive.findOne({table: query.table});
-  if (exists)
+  if (exists) {
     return;
+  }
 
   var drive = {};
   drive['table'] = query.table;
   drive['data'] = [];
+  drive['sheetId'] = query.sheetId;
   Drive.insert(drive);
 }
 

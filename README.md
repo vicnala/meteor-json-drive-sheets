@@ -438,6 +438,7 @@ function updateQueryState (state, id) {
 touch .gitignore
 ```
 settings.json
+private
 ```
 (this contains private data)
 
@@ -446,7 +447,10 @@ Set the ID of the working folder that is in the URL of your Drive:
 touch settings.json
 ```
 {
-  "DRIVE_FOLDER_ID": "0Bz3kk3qA......UHBtcXNjNVU"
+  "GOOGLE_CLIENT_ID": "xxxxxxxxxxxxxxxxxxxxxxxxxxx.apps.googleusercontent.com",
+  "GOOGLE_SECRET": "xxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "DRIVE_FOLDER_ID": "xxxxxxxxxxxxxxxxxxxxxx",
+  "SERVICE_EMAIL": xxxx@xxxxx.iam.gserviceaccount.com"
 }
 ```
 
@@ -472,7 +476,7 @@ Meteor.startup(function(){
 client/main.html
 ```
 <head>
-  <title>JSON to Drive Spreadsheets</title>
+  <title>Meteor REST to Drive sheets sync</title>
 </head>
 <body>
     {{#if currentUser}}
@@ -482,7 +486,7 @@ client/main.html
              src="{{currentUser.services.google.picture}}"/>
           {{> loginButtons}}
       </div>
-        <h2>JSON to Drive Spreadsheets</h2>
+        <h2>Meteor REST to Drive sheets sync</h2>
         {{> query_form}}
         <p></p>
         {{> queries}}
@@ -490,7 +494,7 @@ client/main.html
       <div style="float: right">
         {{> loginButtons}}
       </div>
-      <h2>JSON to Drive Spreadsheets</h2>
+      <h2>Meteor REST to Drive sheets sync</h2>
     {{/if}}
 </body>
 ```
@@ -528,32 +532,417 @@ Meteor.publish("userPicture", function () {
 });
 ```
 
+server/queries.js
+```
+Meteor.startup(function(){
+  var googleUser = Meteor.users.findOne();
+  //console.log(googleUser.services.google.scope);
+
+  // https://github.com/percolatestudio/meteor-google-api
+  // api path:
+  var drv = "drive/v2/files/";
+
+  /*// list files
+  var folder = drv + Meteor.settings.DRIVE_FOLDER_ID;
+  try {
+    var data = GoogleApi.get(folder + '/children', {user: googleUser});
+    _.each(data.items, function (item) {
+      var file = GoogleApi.get(drv + item.id, {user: googleUser});
+      console.log('drive file:', file.title);
+    });
+  } catch (e) {
+    console.log(e);
+  }*/
+
+  Queries.update({}, {$set:{
+    state: 'idle'
+  }});
+
+  SyncedCron.start();
+
+  Queries.find().observe({
+    added: function (query) {
+      // called every server start
+      //console.log('Query added', query.table);
+      if (!query.sheetId) {
+        // add a sheet to google drive
+        body = {
+          'mimeType': 'application/vnd.google-apps.spreadsheet',
+          'title': query.table,
+          'parents': [{'id': Meteor.settings.DRIVE_FOLDER_ID}]
+        };
+        try {
+          console.log('post to google');
+          var res = GoogleApi.post(drv, {
+            user: googleUser,
+            data: body,
+          });
+
+          Queries.update({table: query.table}, {$set:{
+            sheetId: res.id
+          }});
+        } catch (e) {
+          console.log(e);
+        }
+      }
+      // add to the collection with the sheet id
+      addToDriveCollection(query);
+      // add the schedule
+      addToCron(query);
+    },
+    removed: function (query) {
+      //console.log('Query removed', query.table);
+      // trash google sheet
+      try {
+        GoogleApi.post(drv + query.sheetId + '/trash', {user: googleUser});
+      } catch (e) {
+        console.log(e);
+      }
+      Drive.remove({table: query.table});
+      SyncedCron.remove(query.table);
+    }
+  });
+});
 
 
+function addToDriveCollection(query) {
+  var exists = Drive.findOne({table: query.table});
+  if (exists)
+    return;
+
+  var drive = {};
+  drive['table'] = query.table;
+  drive['data'] = [];
+  Drive.insert(drive);
+}
+
+
+function addToCron(query) {
+  SyncedCron.add({
+    name: query.table,
+    schedule: function(parser) {
+      // parser is a later.parse object
+      var p = parser.text(query.period);
+      if (p.error == 0) {
+        //console.log('ERROR:PERIOD:', query.period);
+        updateQueryState('ERROR:PERIOD', query._id);
+      }
+      return p;
+    },
+    job: function() {
+      var start = new Date();
+      updateQueryState('running ...', query._id);
+
+      HTTP.call( 'GET', query.url, {}, function( err, response ) {
+        if ( err ) {
+          //console.log('ERROR:GET', err);
+          updateQueryState('ERROR:GET', query._id);
+        } else {
+          var data;
+          try {
+            var data = JSON.parse(response.content);
+          } catch (e) {
+            //console.log('ERROR:JSON:PARSE:', e);
+            updateQueryState('ERROR:JSON:PARSE', query._id);
+            SyncedCron.remove(query.table);
+          }
+          if(data) {
+            if (checkJSON2DStructure(data)) {
+              var drive = Drive.findOne({table: query.table});
+              if (drive) {
+                Drive.update(drive, {$set:{data: data}});
+              } else {
+                updateQueryState('ERROR:MONGO', query._id);
+                SyncedCron.remove(query.table);
+              }
+
+              var end = new Date;
+              //var diff = Math.floor((end - start) / 1000);
+              var diff = (end - start) / 1000;
+              Queries.update(query._id, {$set:{
+                state: 'idle',
+                spent: diff
+              }});
+            } else {
+              //console.log('ERROR:JSON:PARSE:', e);
+              updateQueryState('ERROR:JSON:STRUCTURE', query._id);
+              SyncedCron.remove(query.table);
+            }
+          }
+        }
+      });
+    }
+  });
+}
+
+
+function checkJSON2DStructure (data) {
+  //var data = [{a: 1, b: 2}, {x: 5, y: 8}, ...];    // Right
+  //var data = [{a: 1, b: 2}, {x: [], y: 8}, ...];   // Wrong
+  var result = true;
+  if (data.constructor === Array) {
+    _.each(data, function (item) {
+      if (item.constructor === Object) {
+        _.each(item, function (v) {
+          //console.log(v, typeof(v));
+          if (typeof(v) === 'object')
+            result = false;
+        })
+      } else {
+        //console.log('not an object');
+        result = false;
+      }
+    });
+  } else {
+    //console.log('not an array');
+    result = false;
+  }
+  //console.log('checkJSON2DStructure:', result);
+  return result;
+}
+
+
+function updateQueryState (state, id) {
+  Queries.update(id, {$set:{
+    state: state
+  }});
+}
+```
+
+## Working with sheets
+
+Go to the Google Developers Console.
+Select or create a project for your Meteor app.
+Create a service account if you don't already have one for this project:
+    In the sidebar on the left, expand APIs & auth. Select Credentials.
+    Under the OAuth heading, select Create new Client ID.
+    When prompted, select Service Account and click Create Client ID.
+    A dialog box appears. To proceed, click Okay, got it.
+Your service account should have a private key associated. Save that private key into a file named "google-key.pem" in your app's "private" folder. You might be given the key within a JSON file, in which case you need to extract and parse it into the separate PEM file (replace "\n" with actual line breaks, etc.).
+Make note of the email address created for your service account (a long, random address). You will need this address in later steps.
+
+Now add the google-spreadsheets package to your Meteor app.
+
+mkdir packages
+cd packages
+git clone https://github.com/ongoworks/meteor-google-spreadsheets.git
+
+meteor add ongoworks:google-spreadsheets
+
+*Change things to use spreadsheetId instead of spreadsheetName in packages/meteor-google-spreadsheets/server/methods.js*
 
 touch server/drive.js
 ```
+Meteor.startup(function () {
+  var sheet;
+  //http://docs.meteor.com/#/full/observe
+  Drive.find().observe({
+    changed: function(table) {
+      console.log('Drive changed', table);
+      writeAll(table);
+    },
+    added: function (table) {
+      // called every server start
+      console.log('Drive added', table.table);
+    },
+    removed: function (table) {
+      console.log('Drive removed', table.table);
+    }
+  });
+});
+
+
+function writeAll (table) {
+  var obj = {};
+  obj[1] = {}
+  var colPropNames = {};
+  var col = 1;
+
+  _.each(table.data[0], function (val, key) {
+    obj[1][col] = key;
+    colPropNames[key] = col;
+    col++;
+  });
+
+  var row = 2;
+  table.data.forEach(function (item) {
+    obj[row] = {};
+    _.each(item, function (val, prop) {
+      var pCol = colPropNames[prop];
+      if (!pCol)
+        return;
+      obj[row][pCol] = val.toString();
+    });
+    row++;
+  });
+
+  Meteor.call("spreadsheet/update",  table.sheetId, "1", obj, {email: Meteor.settings.SERVICE_EMAIL});
+}
 ```
 
-
-
-
+rewrite server/queries.js
 ```
+Meteor.startup(function(){
+  var drv = "drive/v2/files/";
+
+  Queries.update({}, {$set:{
+    state: 'idle'
+  }});
+
+  SyncedCron.start();
+
+  Queries.find().observe({
+    added: function (query) {
+      var googleUser = Meteor.users.findOne();
+      // called every server start
+      // add to the collection with the sheet id
+      addToDriveCollection(query);
+      // add the schedule
+      addToCron(query);
+
+      //console.log('Query added', query.table);
+      if (!query.sheetId) {
+        // add a sheet to google drive
+        body = {
+          'mimeType': 'application/vnd.google-apps.spreadsheet',
+          'title': query.table,
+          'parents': [{'id': Meteor.settings.DRIVE_FOLDER_ID}]
+        };
+        try {
+          var res = GoogleApi.post(drv, {
+            user: googleUser,
+            data: body,
+          });
+
+          Queries.update({table: query.table}, {$set:{
+            sheetId: res.id
+          }});
+
+          Drive.update({table: query.table}, {$set:{
+            sheetId: res.id
+          }});
+        } catch (e) {
+          console.log(e);
+        }
+      }
+    },
+    removed: function (query) {
+      var googleUser = Meteor.users.findOne();
+      //console.log('Query removed', query.table);
+      // trash google sheet
+      try {
+        GoogleApi.post(drv + query.sheetId + '/trash', {user: googleUser});
+      } catch (e) {
+        console.log(e);
+      }
+      Drive.remove({table: query.table});
+      SyncedCron.remove(query.table);
+    }
+  });
+});
+
+
+function addToDriveCollection(query) {
+  var exists = Drive.findOne({table: query.table});
+  if (exists) {
+    return;
+  }
+
+  var drive = {};
+  drive['table'] = query.table;
+  drive['data'] = [];
+  drive['sheetId'] = query.sheetId;
+  Drive.insert(drive);
+}
+
+
+function addToCron(query) {
+  SyncedCron.add({
+    name: query.table,
+    schedule: function(parser) {
+      // parser is a later.parse object
+      var p = parser.text(query.period);
+      if (p.error == 0) {
+        //console.log('ERROR:PERIOD:', query.period);
+        updateQueryState('ERROR:PERIOD', query._id);
+      }
+      return p;
+    },
+    job: function() {
+      var start = new Date();
+      updateQueryState('running ...', query._id);
+
+      HTTP.call( 'GET', query.url, {}, function( err, response ) {
+        if ( err ) {
+          //console.log('ERROR:GET', err);
+          updateQueryState('ERROR:GET', query._id);
+        } else {
+          var data;
+          try {
+            var data = JSON.parse(response.content);
+          } catch (e) {
+            //console.log('ERROR:JSON:PARSE:', e);
+            updateQueryState('ERROR:JSON:PARSE', query._id);
+            SyncedCron.remove(query.table);
+          }
+          if(data) {
+            if (checkJSON2DStructure(data)) {
+              var drive = Drive.findOne({table: query.table});
+              if (drive) {
+                Drive.update(drive, {$set:{data: data}});
+              } else {
+                updateQueryState('ERROR:MONGO', query._id);
+                SyncedCron.remove(query.table);
+              }
+
+              var end = new Date;
+              //var diff = Math.floor((end - start) / 1000);
+              var diff = (end - start) / 1000;
+              Queries.update(query._id, {$set:{
+                state: 'idle',
+                spent: diff
+              }});
+            } else {
+              //console.log('ERROR:JSON:PARSE:', e);
+              updateQueryState('ERROR:JSON:STRUCTURE', query._id);
+              SyncedCron.remove(query.table);
+            }
+          }
+        }
+      });
+    }
+  });
+}
+
+function checkJSON2DStructure (data) {
+  //var data = [{a: 1, b: 2}, {x: 5, y: 8}, ...];    // Right
+  //var data = [{a: 1, b: 2}, {x: [], y: 8}, ...];   // Wrong
+  var result = true;
+  if (data.constructor === Array) {
+    _.each(data, function (item) {
+      if (item.constructor === Object) {
+        _.each(item, function (v) {
+          //console.log(v, typeof(v));
+          if (typeof(v) === 'object')
+            result = false;
+        })
+      } else {
+        //console.log('not an object');
+        result = false;
+      }
+    });
+  } else {
+    //console.log('not an array');
+    result = false;
+  }
+  //console.log('checkJSON2DStructure:', result);
+  return result;
+}
+
+
+function updateQueryState (state, id) {
+  Queries.update(id, {$set:{
+    state: state
+  }});
+}
 ```
-
-
-
-
-a. Use [this wizard](https://console.developers.google.com/start/api?id=drive) to create or select a project in the Google Developers Console and automatically turn on the API. Click Continue, then Go to credentials.
-
-b. At the top of the page, select the OAuth consent screen tab. Select an Email address, enter a Product name if not already set, and click the Save button.
-
-c. Select the Credentials tab, click the Add credentials button and select OAuth 2.0 client ID.
-
-d. Select the application type Other, enter the name "Meteor JSON Drive Sheets", and click the Create button.
-
-e. Click OK to dismiss the resulting dialog.
-
-f. Click the (Download JSON) button to the right of the client ID.
-
-g. Move this file to the ```private``` directory and rename it client_secret.json.
