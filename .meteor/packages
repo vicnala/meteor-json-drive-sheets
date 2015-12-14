@@ -19,3 +19,6 @@ ecmascript              # Enable ECMAScript2015+ syntax in app code
 check
 percolate:synced-cron
 http
+accounts-ui
+accounts-google
+percolate:google-api

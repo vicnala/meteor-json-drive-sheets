@@ -2,8 +2,21 @@
   <title>JSON to Drive Spreadsheets</title>
 </head>
 <body>
-  <h2>JSON to Drive Spreadsheets</h2>
-  {{> query_form}}
-  <p></p>
-  {{> queries}}
+    {{#if currentUser}}
+      <div style="float: right">
+        <img class="img-rounded"
+             style="height: 32px; margin-top: 4px;"
+             src="{{currentUser.services.google.picture}}"/>
+          {{> loginButtons}}
+      </div>
+        <h2>JSON to Drive Spreadsheets</h2>
+        {{> query_form}}
+        <p></p>
+        {{> queries}}
+    {{else}}
+      <div style="float: right">
+        {{> loginButtons}}
+      </div>
+      <h2>JSON to Drive Spreadsheets</h2>
+    {{/if}}
 </body>

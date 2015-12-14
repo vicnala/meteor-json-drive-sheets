@@ -1,23 +1,84 @@
 Meteor.startup(function(){
+  var googleUser = Meteor.users.findOne();
+  //console.log(googleUser.services.google.scope);
+
+  // https://github.com/percolatestudio/meteor-google-api
+  // api path:
+  var drv = "drive/v2/files/";
+
+  /*// list files
+  var folder = drv + Meteor.settings.DRIVE_FOLDER_ID;
+  try {
+    var data = GoogleApi.get(folder + '/children', {user: googleUser});
+    _.each(data.items, function (item) {
+      var file = GoogleApi.get(drv + item.id, {user: googleUser});
+      console.log('drive file:', file.title);
+    });
+  } catch (e) {
+    console.log(e);
+  }*/
+
   Queries.update({}, {$set:{
     state: 'idle'
   }});
 
   SyncedCron.start();
+
+  Queries.find().observe({
+    added: function (query) {
+      // called every server start
+      //console.log('Query added', query.table);
+      if (!query.sheetId) {
+        // add a sheet to google drive
+        body = {
+          'mimeType': 'application/vnd.google-apps.spreadsheet',
+          'title': query.table,
+          'parents': [{'id': Meteor.settings.DRIVE_FOLDER_ID}]
+        };
+        try {
+          console.log('post to google');
+          var res = GoogleApi.post(drv, {
+            user: googleUser,
+            data: body,
+          });
+
+          Queries.update({table: query.table}, {$set:{
+            sheetId: res.id
+          }});
+        } catch (e) {
+          console.log(e);
+        }
+      }
+      // add to the collection with the sheet id
+      addToDriveCollection(query);
+      // add the schedule
+      addToCron(query);
+    },
+    removed: function (query) {
+      //console.log('Query removed', query.table);
+      // trash google sheet
+      try {
+        GoogleApi.post(drv + query.sheetId + '/trash', {user: googleUser});
+      } catch (e) {
+        console.log(e);
+      }
+      Drive.remove({table: query.table});
+      SyncedCron.remove(query.table);
+    }
+  });
 });
 
 
-Queries.find().observe({
-  added: function (query) {
-    // called every server start
-    //console.log('Meteor: added', query);
-    addToCron(query);
-  },
-  removed: function (query) {
-    //console.log('Meteor: remove', query);
-    SyncedCron.remove(query.table);
-  }
-});
+function addToDriveCollection(query) {
+  var exists = Drive.findOne({table: query.table});
+  if (exists)
+    return;
+
+  var drive = {};
+  drive['table'] = query.table;
+  drive['data'] = [];
+  Drive.insert(drive);
+}
 
 
 function addToCron(query) {
@@ -50,10 +111,14 @@ function addToCron(query) {
             SyncedCron.remove(query.table);
           }
           if(data) {
-            console.log(data);
             if (checkJSON2DStructure(data)) {
-
-              // TODO something with data
+              var drive = Drive.findOne({table: query.table});
+              if (drive) {
+                Drive.update(drive, {$set:{data: data}});
+              } else {
+                updateQueryState('ERROR:MONGO', query._id);
+                SyncedCron.remove(query.table);
+              }
 
               var end = new Date;
               //var diff = Math.floor((end - start) / 1000);
