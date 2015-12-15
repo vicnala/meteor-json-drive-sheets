@@ -510,13 +510,20 @@ var scopes = [
   'https://www.googleapis.com/auth/userinfo.profile'
 ]
 
-Accounts.ui.config({'requestPermissions':{'google':scopes}});
+Accounts.ui.config({
+  'requestPermissions':{
+    'google': scopes
+  },
+  'requestOfflineToken': {
+    google: true
+  }
+});
 ```
 
 lib/collections/queries.js
 ```
 //...
-        _.extend(query, {state: 'idle', spent: '-', lastrun: '-', sheetId: undefined});
+        _.extend(query, {state: 'idle', getTime: '-', uploadTime: '-', totalTime: '-', lastRun: '-', nextRun: '-', sheetId: undefined});
 //...
 ```
 
@@ -738,8 +745,21 @@ Meteor.startup(function () {
   //http://docs.meteor.com/#/full/observe
   Drive.find().observe({
     changed: function(table) {
+      var start = new Date()
+      var getTime = Queries.findOne({table: table.table}).getTime;
+
       console.log('Drive changed', table);
+      Queries.update({table: table.table}, {$set:{state: 'uploading ...'}});
+      // upload
       writeAll(table);
+
+      var end = new Date();
+      var diff = Math.abs(end - start) / 1000;
+      Queries.update({table: table.table}, {$set:{
+        state: 'idle',
+        uploadTime: diff,
+        totalTime: Math.abs(getTime + diff).toFixed(2)
+      }});
     },
     added: function (table) {
       // called every server start
@@ -780,10 +800,28 @@ function writeAll (table) {
 }
 ```
 
+
 rewrite server/queries.js
 ```
 Meteor.startup(function(){
+  //console.log(googleUser.services.google.scope);
+
+  // https://github.com/percolatestudio/meteor-google-api
+  // api path:
   var drv = "drive/v2/files/";
+
+  /*// list files
+  var folder = drv + Meteor.settings.DRIVE_FOLDER_ID;
+  try {
+    var data = GoogleApi.get(folder + '/children', {user: googleUser});
+    _.each(data.items, function (item) {
+      var file = GoogleApi.get(drv + item.id, {user: googleUser});
+      console.log('drive file:', file.title);
+    });
+  } catch (e) {
+    console.log(e);
+  }*/
+
 
   Queries.update({}, {$set:{
     state: 'idle'
@@ -794,6 +832,13 @@ Meteor.startup(function(){
   Queries.find().observe({
     added: function (query) {
       var googleUser = Meteor.users.findOne();
+
+      /*if (!checkToken(googleUser)) {
+        console.log('token expired, refreshing ...');
+        Meteor.call('exchangeRefreshToken', googleUser._id);
+        console.log('refreshed ...');
+      }*/
+
       // called every server start
       // add to the collection with the sheet id
       addToDriveCollection(query);
@@ -815,7 +860,8 @@ Meteor.startup(function(){
           });
 
           Queries.update({table: query.table}, {$set:{
-            sheetId: res.id
+            sheetId: res.id,
+            nextRun: SyncedCron.nextScheduledAtDate(query.table).toLocaleTimeString()
           }});
 
           Drive.update({table: query.table}, {$set:{
@@ -828,6 +874,15 @@ Meteor.startup(function(){
     },
     removed: function (query) {
       var googleUser = Meteor.users.findOne();
+
+      /*if (checkToken(googleUser)) {
+        //console.log('token ok', diff);
+      } else {
+        console.log('token expired, refreshing ...');
+        Meteor.call('exchangeRefreshToken', googleUser._id);
+        console.log('refreshed ...');
+      }*/
+
       //console.log('Query removed', query.table);
       // trash google sheet
       try {
@@ -894,13 +949,13 @@ function addToCron(query) {
                 updateQueryState('ERROR:MONGO', query._id);
                 SyncedCron.remove(query.table);
               }
-
-              var end = new Date;
               //var diff = Math.floor((end - start) / 1000);
-              var diff = (end - start) / 1000;
+              var diff = Math.abs((new Date()) - start) / 1000;
               Queries.update(query._id, {$set:{
                 state: 'idle',
-                spent: diff
+                getTime: diff,
+                lastRun: (new Date()).toLocaleTimeString(),
+                nextRun: SyncedCron.nextScheduledAtDate(query.table).toLocaleTimeString()
               }});
             } else {
               //console.log('ERROR:JSON:PARSE:', e);
@@ -913,6 +968,7 @@ function addToCron(query) {
     }
   });
 }
+
 
 function checkJSON2DStructure (data) {
   //var data = [{a: 1, b: 2}, {x: 5, y: 8}, ...];    // Right
@@ -944,5 +1000,19 @@ function updateQueryState (state, id) {
   Queries.update(id, {$set:{
     state: state
   }});
+}
+
+function checkToken(user) {
+  if (user.hasOwnProperty('services')) {
+    var now = new Date();
+    var diff = (now - user.services.google.expiresAt) / 1000;
+
+    if (diff > 0) {
+      return false;
+    }
+    return true;
+  } else {
+    return false;
+  }
 }
 ```

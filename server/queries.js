@@ -27,6 +27,13 @@ Meteor.startup(function(){
   Queries.find().observe({
     added: function (query) {
       var googleUser = Meteor.users.findOne();
+
+      /*if (!checkToken(googleUser)) {
+        console.log('token expired, refreshing ...');
+        Meteor.call('exchangeRefreshToken', googleUser._id);
+        console.log('refreshed ...');
+      }*/
+
       // called every server start
       // add to the collection with the sheet id
       addToDriveCollection(query);
@@ -62,6 +69,15 @@ Meteor.startup(function(){
     },
     removed: function (query) {
       var googleUser = Meteor.users.findOne();
+
+      /*if (checkToken(googleUser)) {
+        //console.log('token ok', diff);
+      } else {
+        console.log('token expired, refreshing ...');
+        Meteor.call('exchangeRefreshToken', googleUser._id);
+        console.log('refreshed ...');
+      }*/
+
       //console.log('Query removed', query.table);
       // trash google sheet
       try {
@@ -128,16 +144,13 @@ function addToCron(query) {
                 updateQueryState('ERROR:MONGO', query._id);
                 SyncedCron.remove(query.table);
               }
-
-              var end = new Date();
-              var next = SyncedCron.nextScheduledAtDate(query.table)
               //var diff = Math.floor((end - start) / 1000);
-              var diff = (end - start) / 1000;
+              var diff = Math.abs((new Date()) - start) / 1000;
               Queries.update(query._id, {$set:{
                 state: 'idle',
                 getTime: diff,
-                lastRun: end.toLocaleTimeString(),
-                nextRun: next.toLocaleTimeString()
+                lastRun: (new Date()).toLocaleTimeString(),
+                nextRun: SyncedCron.nextScheduledAtDate(query.table).toLocaleTimeString()
               }});
             } else {
               //console.log('ERROR:JSON:PARSE:', e);
@@ -182,4 +195,18 @@ function updateQueryState (state, id) {
   Queries.update(id, {$set:{
     state: state
   }});
+}
+
+function checkToken(user) {
+  if (user.hasOwnProperty('services')) {
+    var now = new Date();
+    var diff = (now - user.services.google.expiresAt) / 1000;
+
+    if (diff > 0) {
+      return false;
+    }
+    return true;
+  } else {
+    return false;
+  }
 }

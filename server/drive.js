@@ -12,11 +12,11 @@ Meteor.startup(function () {
       writeAll(table);
 
       var end = new Date();
-      var diff = (end - start) / 1000;
+      var diff = Math.abs(end - start) / 1000;
       Queries.update({table: table.table}, {$set:{
         state: 'idle',
         uploadTime: diff,
-        totalTime: (getTime + diff).toFixed(2)
+        totalTime: Math.abs(getTime + diff).toFixed(2)
       }});
     },
     added: function (table) {
