@@ -1,46 +1,41 @@
 Meteor.startup(function(){
+  // drive api must be in scope (see client/lib/config.js)
   //console.log(googleUser.services.google.scope);
 
   // https://github.com/percolatestudio/meteor-google-api
-  // api path:
+  // The API path:
   var drv = "drive/v2/files/";
 
-  /*// list files
-  var folder = drv + Meteor.settings.DRIVE_FOLDER_ID;
-  try {
-    var data = GoogleApi.get(folder + '/children', {user: googleUser});
-    _.each(data.items, function (item) {
-      var file = GoogleApi.get(drv + item.id, {user: googleUser});
-      console.log('drive file:', file.title);
-    });
-  } catch (e) {
-    console.log(e);
-  }*/
-
-
+  // set everything to idle on startup
   Queries.update({}, {$set:{
     state: 'idle'
   }});
-
+  // start cron
   SyncedCron.start();
-
+  // observe Queries
   Queries.find().observe({
     added: function (query) {
+      //console.log('Query added', query.table);
+      // called every server start
       var googleUser = Meteor.users.findOne();
-
-      /*if (!checkToken(googleUser)) {
+      // check user
+      if (!googleUser) {
+        console.log('Google user error!');
+        return;
+      }
+      // check refresh token
+      if (!checkToken(googleUser)) {
         console.log('token expired, refreshing ...');
         Meteor.call('exchangeRefreshToken', googleUser._id);
-        console.log('refreshed ...');
-      }*/
+      }
 
-      // called every server start
-      // add to the collection with the sheet id
+      // add a table to the drive collection with the query.table reference
       addToDriveCollection(query);
       // add the schedule
       addToCron(query);
 
-      //console.log('Query added', query.table);
+      // if we do not have a Google sheet Id
+      // we have to create a new sheet
       if (!query.sheetId) {
         // add a sheet to google drive
         body = {
@@ -49,16 +44,17 @@ Meteor.startup(function(){
           'parents': [{'id': Meteor.settings.DRIVE_FOLDER_ID}]
         };
         try {
+          // call google drive api
           var res = GoogleApi.post(drv, {
-            user: googleUser,
-            data: body,
+            user: Meteor.users.findOne(), // we can't use the above googleUser because
+            data: body,                   // we can have a (new) refreshed token
           });
-
+          // update query with the new sheetId
           Queries.update({table: query.table}, {$set:{
             sheetId: res.id,
             nextRun: SyncedCron.nextScheduledAtDate(query.table).toLocaleTimeString()
           }});
-
+          // update drive table collection with the new sheetId
           Drive.update({table: query.table}, {$set:{
             sheetId: res.id
           }});
@@ -68,23 +64,23 @@ Meteor.startup(function(){
       }
     },
     removed: function (query) {
-      var googleUser = Meteor.users.findOne();
-
-      /*if (checkToken(googleUser)) {
-        //console.log('token ok', diff);
-      } else {
-        console.log('token expired, refreshing ...');
-        Meteor.call('exchangeRefreshToken', googleUser._id);
-        console.log('refreshed ...');
-      }*/
-
       //console.log('Query removed', query.table);
-      // trash google sheet
-      try {
-        GoogleApi.post(drv + query.sheetId + '/trash', {user: googleUser});
-      } catch (e) {
-        console.log(e);
+      var googleUser = Meteor.users.findOne();
+      if (query.sheetId) {
+        // check refresh token
+        if (!checkToken(googleUser)) {
+          console.log('token expired, refreshing ...');
+          Meteor.call('exchangeRefreshToken', googleUser._id);
+        }
+        // trash google sheet
+        try {
+          // call google drive api
+          GoogleApi.post(drv + query.sheetId + '/trash', {user: Meteor.users.findOne()});
+        } catch (e) {
+          console.log(e);
+        }
       }
+      // remove table from drive collection
       Drive.remove({table: query.table});
       SyncedCron.remove(query.table);
     }
@@ -114,52 +110,72 @@ function addToCron(query) {
       var p = parser.text(query.period);
       if (p.error == 0) {
         //console.log('ERROR:PERIOD:', query.period);
-        updateQueryState('ERROR:PERIOD', query._id);
+        Queries.update(query._id, {$set:{
+          state: 'ERROR:SCHEDULE',
+          period: 'at 5:00 am'
+        }});
+        p.schedules = [{ t: [ 18000 ] }];
       }
       return p;
     },
     job: function() {
-      var start = new Date();
-      updateQueryState('running ...', query._id);
+      // check if we are running or uploading ...
+      if (query.state === 'idle') {
+        // update query state
+        updateQueryState('running ...', query._id);
+        // star counting time
+        var start = new Date();
 
-      HTTP.call( 'GET', query.url, {}, function( err, response ) {
-        if ( err ) {
-          //console.log('ERROR:GET', err);
-          updateQueryState('ERROR:GET', query._id);
-        } else {
-          var data;
-          try {
-            var data = JSON.parse(response.content);
-          } catch (e) {
-            //console.log('ERROR:JSON:PARSE:', e);
-            updateQueryState('ERROR:JSON:PARSE', query._id);
-            SyncedCron.remove(query.table);
-          }
-          if(data) {
-            if (checkJSON2DStructure(data)) {
-              var drive = Drive.findOne({table: query.table});
-              if (drive) {
-                Drive.update(drive, {$set:{data: data}});
-              } else {
-                updateQueryState('ERROR:MONGO', query._id);
-                SyncedCron.remove(query.table);
-              }
-              //var diff = Math.floor((end - start) / 1000);
-              var diff = Math.abs((new Date()) - start) / 1000;
-              Queries.update(query._id, {$set:{
-                state: 'idle',
-                getTime: diff,
-                lastRun: (new Date()).toLocaleTimeString(),
-                nextRun: SyncedCron.nextScheduledAtDate(query.table).toLocaleTimeString()
-              }});
-            } else {
-              //console.log('ERROR:JSON:PARSE:', e);
-              updateQueryState('ERROR:JSON:STRUCTURE', query._id);
+        HTTP.call( 'GET', query.url, {}, function( err, response ) {
+          if ( err ) {
+            //console.log('ERROR:GET', err);
+            updateQueryState('ERROR:GET', query._id);
+          } else {
+            // here we GET THE DATA
+            var data;
+            try {
+              // create an object
+              var data = JSON.parse(response.content);
+            } catch (e) {
+              updateQueryState('ERROR:JSON:PARSE', query._id);
               SyncedCron.remove(query.table);
             }
+            // check data
+            if(data) {
+              // check structure
+              if (checkJSON2DStructure(data)) {
+                // actually set the data into the drive collection document
+                var drive = Drive.findOne({table: query.table});
+                if (drive) {
+                  Drive.update(drive, {$set:{data: data}});
+                } else {
+                  updateQueryState('ERROR:MONGO', query._id);
+                  SyncedCron.remove(query.table);
+                }
+
+                // get nextRun data
+                var next = '-';
+                var nextRun = SyncedCron.nextScheduledAtDate(query.table);
+                // check nextRun (may be removed)
+                if (nextRun)
+                  next = nextRun.toLocaleTimeString();
+                // calculate GET time
+                var diff = Math.abs((new Date()) - start) / 1000;
+                // update query information
+                Queries.update(query._id, {$set:{
+                  getTime: diff,
+                  lastRun: (new Date()).toLocaleTimeString(),
+                  nextRun: next
+                }});
+              } else {
+                //console.log('ERROR:JSON:PARSE:', e);
+                updateQueryState('ERROR:JSON:STRUCTURE', query._id);
+                SyncedCron.remove(query.table);
+              }
+            }
           }
-        }
-      });
+        });
+      }
     }
   });
 }
@@ -210,3 +226,16 @@ function checkToken(user) {
     return false;
   }
 }
+
+
+/*// list files
+var folder = drive/v2/files/ + Meteor.settings.DRIVE_FOLDER_ID;
+try {
+  var data = GoogleApi.get(folder + '/children', {user: googleUser});
+  _.each(data.items, function (item) {
+    var file = GoogleApi.get(drv + item.id, {user: googleUser});
+    console.log('drive file:', file.title);
+  });
+} catch (e) {
+  console.log(e);
+}*/
