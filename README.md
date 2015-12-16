@@ -1076,3 +1076,58 @@ function checkToken(user) {
   }
 }
 ```
+
+## The meteor-google-spreadsheets patch
+
+We want to use the spreadsheetId instead of spreadsheetName. So we have to patch the meteor-google-spreadsheets package.
+
+mkdir packages
+cd packages
+git clone https://github.com/ongoworks/meteor-google-spreadsheets/
+
+This is the diff
+```
+diff --git a/server/methods.js b/server/methods.js
+index d7ec5bd..d67a4b4 100644
+--- a/server/methods.js
++++ b/server/methods.js
+@@ -43,15 +43,15 @@ Meteor.methods({
+     }));
+     return fut.wait();
+   },
+-  'spreadsheet/fetch2': function (spreadsheetName, worksheetId, options) {
+-    check(spreadsheetName, String);
++  'spreadsheet/fetch2': function (spreadsheetId, worksheetId, options) {
++    check(spreadsheetId, String);
+     check(worksheetId, Match.OneOf(String, Number));
+     check(options, Object);
+     var fut = new Future(); //don't return until we're done exporting
+
+     EditGoogleSpreadsheet.load({
+       //debug: true,
+-      spreadsheetName: spreadsheetName,
++      spreadsheetId: spreadsheetId,
+       worksheetId: worksheetId,
+       oauth : {
+         email: options.email,
+@@ -74,8 +74,8 @@ Meteor.methods({
+     });
+     return fut.wait();
+   },
+-  'spreadsheet/update': function (spreadsheetName, worksheetId, updateObject, options) {
+-    check(spreadsheetName, String);
++  'spreadsheet/update': function (spreadsheetId, worksheetId, updateObject, options) {
++    check(spreadsheetId, String);
+     check(worksheetId, Match.OneOf(String, Number));
+     check(updateObject, Object);
+     check(options, Object);
+@@ -83,7 +83,7 @@ Meteor.methods({
+
+     EditGoogleSpreadsheet.load({
+       //debug: true,
+-      spreadsheetName: spreadsheetName,
++      spreadsheetId: spreadsheetId,
+       worksheetId: worksheetId,
+       oauth : {
+         email: options.email,
+```
